@@ -4,7 +4,7 @@ import CoreGraphics
 import Foundation
 
 @MainActor
-final class PassiveCaptureMonitor: ObservableObject {
+final class PassiveCaptureMonitor: NSObject, ObservableObject {
     @Published var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledDefaultsKey)
@@ -75,16 +75,18 @@ final class PassiveCaptureMonitor: ObservableObject {
     private var lastWindowCaptureAt: Date?
     private var lastBrowserCaptureAt: Date?
 
-    init() {
-        isEnabled = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool ?? false
-        isOCREnabled = UserDefaults.standard.object(forKey: Self.ocrEnabledDefaultsKey) as? Bool ?? false
+    override init() {
+        let isTestMode = ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1"
+        isEnabled = isTestMode
+            ? false
+            : UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool ?? false
+        isOCREnabled = isTestMode
+            ? false
+            : UserDefaults.standard.object(forKey: Self.ocrEnabledDefaultsKey) as? Bool ?? false
         capturesWindows = UserDefaults.standard.object(forKey: Self.windowsDefaultsKey) as? Bool ?? true
         capturesBrowser = UserDefaults.standard.object(forKey: Self.browserDefaultsKey) as? Bool ?? true
         capturesTyping = UserDefaults.standard.object(forKey: Self.typingDefaultsKey) as? Bool ?? true
-        if ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1" {
-            isEnabled = false
-            isOCREnabled = false
-        }
+        super.init()
     }
 
     func configure(store: MemoryStore) {
@@ -187,11 +189,17 @@ final class PassiveCaptureMonitor: ObservableObject {
         statusText = "无感记录运行中"
         poll()
 
-        timer = Timer.scheduledTimer(withTimeInterval: timerInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.poll()
-            }
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: timerInterval,
+            target: self,
+            selector: #selector(pollTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func pollTimerFired(_ timer: Timer) {
+        poll()
     }
 
     private func stopTimer() {

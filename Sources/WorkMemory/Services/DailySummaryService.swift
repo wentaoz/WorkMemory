@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class DailySummaryService: ObservableObject {
+final class DailySummaryService: NSObject, ObservableObject {
     @Published private(set) var isSummarizing = false
     @Published private(set) var statusText = "AI 总结未运行"
     @Published private(set) var lastSummaryAt: Date?
@@ -60,9 +60,17 @@ final class DailySummaryService: ObservableObject {
 
     private func startScheduler() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.runAutomaticCheckNow() }
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: 60,
+            target: self,
+            selector: #selector(schedulerTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func schedulerTimerFired(_ timer: Timer) {
+        runAutomaticCheckNow()
     }
 
     private func summarizeToday(isAutomatic: Bool) async {

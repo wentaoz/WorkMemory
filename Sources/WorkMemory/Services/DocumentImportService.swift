@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 @MainActor
-final class DocumentImportService: ObservableObject {
+final class DocumentImportService: NSObject, ObservableObject {
     @Published var folderPath: String {
         didSet {
             UserDefaults.standard.set(folderPath, forKey: Self.folderPathKey)
@@ -34,12 +34,13 @@ final class DocumentImportService: ObservableObject {
     private let scanInterval: TimeInterval = 180
     private let maxFilesPerScan = 12
 
-    init() {
+    override init() {
+        let isTestMode = ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1"
         folderPath = UserDefaults.standard.string(forKey: Self.folderPathKey) ?? ""
-        autoImportEnabled = UserDefaults.standard.object(forKey: Self.autoImportEnabledKey) as? Bool ?? false
-        if ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1" {
-            autoImportEnabled = false
-        }
+        autoImportEnabled = isTestMode
+            ? false
+            : UserDefaults.standard.object(forKey: Self.autoImportEnabledKey) as? Bool ?? false
+        super.init()
     }
 
     func configure(
@@ -80,11 +81,17 @@ final class DocumentImportService: ObservableObject {
 
     private func startTimer() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: scanInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.scanFolder()
-            }
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: scanInterval,
+            target: self,
+            selector: #selector(scanTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func scanTimerFired(_ timer: Timer) {
+        Task { await scanFolder() }
     }
 
     private func stopTimer() {
