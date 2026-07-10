@@ -16,20 +16,21 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 ICON_FILE="$ROOT_DIR/Resources/WorkMemory.icns"
 DMG_STAGING_DIR="$DIST_DIR/dmg-staging"
-DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
+VERSION="${WORKMEMORY_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
+BUILD_NUMBER="${WORKMEMORY_BUILD_NUMBER:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
+CONFIGURATION="${WORKMEMORY_BUILD_CONFIGURATION:-release}"
+DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION-universal.dmg"
 SIGN_IDENTITY="${WORKMEMORY_SIGN_IDENTITY:-}"
 ARM_TRIPLE="arm64-apple-macosx$MIN_SYSTEM_VERSION"
 INTEL_TRIPLE="x86_64-apple-macosx$MIN_SYSTEM_VERSION"
 
 cd "$ROOT_DIR"
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
-
 "$ROOT_DIR/script/generate_app_icon.sh" >/dev/null
-swift build --triple "$ARM_TRIPLE"
-swift build --triple "$INTEL_TRIPLE"
-ARM_BINARY="$(swift build --show-bin-path --triple "$ARM_TRIPLE")/$APP_NAME"
-INTEL_BINARY="$(swift build --show-bin-path --triple "$INTEL_TRIPLE")/$APP_NAME"
+swift build --configuration "$CONFIGURATION" --triple "$ARM_TRIPLE"
+swift build --configuration "$CONFIGURATION" --triple "$INTEL_TRIPLE"
+ARM_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$ARM_TRIPLE")/$APP_NAME"
+INTEL_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$INTEL_TRIPLE")/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
@@ -48,12 +49,20 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key>
+  <string>$APP_NAME</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$BUILD_NUMBER</string>
   <key>CFBundleIconFile</key>
   <string>WorkMemory</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.productivity</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSMicrophoneUsageDescription</key>
@@ -64,6 +73,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>WorkMemory uses automation to read the current browser tab title and URL when passive capture is enabled.</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>WorkMemory uses screen capture locally to OCR the active window when local OCR is enabled.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>WorkMemory exports action items to a dedicated Reminders list when you request it.</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>WorkMemory creates and updates reminders only when you explicitly export an action item.</string>
 </dict>
 </plist>
 PLIST
@@ -82,7 +95,10 @@ fi
 
 /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_BUNDLE" >/dev/null
 echo "signed with: $SIGN_IDENTITY"
-/usr/bin/lipo -info "$APP_BINARY"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+LIPO_INFO="$(/usr/bin/lipo -info "$APP_BINARY")"
+echo "$LIPO_INFO"
+[[ "$LIPO_INFO" == *"arm64"* && "$LIPO_INFO" == *"x86_64"* ]]
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
@@ -97,7 +113,7 @@ create_dmg() {
 WorkMemory install notes
 
 1. Drag WorkMemory.app to Applications.
-   This build is universal and supports Apple Silicon and Intel Macs on macOS $MIN_SYSTEM_VERSION or later.
+   Version $VERSION is universal and supports Apple Silicon and Intel Macs on macOS $MIN_SYSTEM_VERSION or later.
 2. On first launch, macOS may ask for permissions:
    - Accessibility: passive text/context capture.
    - Screen Recording: local OCR.
@@ -116,6 +132,7 @@ NOTES
     "$DMG_PATH" >/dev/null
 
   /usr/bin/hdiutil verify "$DMG_PATH" >/dev/null
+  /usr/bin/shasum -a 256 "$DMG_PATH"
   echo "$DMG_PATH"
 }
 

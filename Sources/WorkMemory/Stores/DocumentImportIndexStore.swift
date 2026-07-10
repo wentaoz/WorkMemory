@@ -7,14 +7,14 @@ final class DocumentImportIndexStore: ObservableObject {
     private let legacyFileURL: URL
 
     init(fileManager: FileManager = .default) {
-        let supportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("WorkMemory", isDirectory: true)
-        ?? fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/WorkMemory", isDirectory: true)
+        let supportURL = WorkMemoryDataLocation.supportURL(fileManager: fileManager)
 
         self.legacyFileURL = supportURL.appendingPathComponent("document_index.json")
-        self.database = try! SQLiteDatabase(fileManager: fileManager)
+        do {
+            self.database = try SQLiteDatabase(fileManager: fileManager)
+        } catch {
+            fatalError("Unable to open WorkMemory document index: \(error.localizedDescription)")
+        }
 
         migrateLegacyJSONIfNeeded(fileManager: fileManager)
         records = database.loadDocumentImportRecords()

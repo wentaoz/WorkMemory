@@ -24,6 +24,18 @@ final class PassiveCaptureMonitor: ObservableObject {
         }
     }
 
+    @Published var capturesWindows: Bool {
+        didSet { UserDefaults.standard.set(capturesWindows, forKey: Self.windowsDefaultsKey) }
+    }
+
+    @Published var capturesBrowser: Bool {
+        didSet { UserDefaults.standard.set(capturesBrowser, forKey: Self.browserDefaultsKey) }
+    }
+
+    @Published var capturesTyping: Bool {
+        didSet { UserDefaults.standard.set(capturesTyping, forKey: Self.typingDefaultsKey) }
+    }
+
     @Published private(set) var accessibilityTrusted = AXIsProcessTrusted()
     @Published private(set) var screenCaptureTrusted = CGPreflightScreenCaptureAccess()
     @Published private(set) var statusText = "无感记录未开启"
@@ -33,6 +45,9 @@ final class PassiveCaptureMonitor: ObservableObject {
 
     private static let enabledDefaultsKey = "passiveCapture.isEnabled"
     private static let ocrEnabledDefaultsKey = "passiveCapture.ocrEnabled"
+    private static let windowsDefaultsKey = "passiveCapture.windowsEnabled"
+    private static let browserDefaultsKey = "passiveCapture.browserEnabled"
+    private static let typingDefaultsKey = "passiveCapture.typingEnabled"
     private static let screenCapturePendingText = "等待屏幕录制授权；授权后请重启或刷新"
     private let activeContextReader = ActiveContextReader()
     private let textReader = AccessibilityTextReader()
@@ -41,7 +56,9 @@ final class PassiveCaptureMonitor: ObservableObject {
     private let privacyFilter = PrivacyFilter()
     private let minimumTextDeltaLength = 18
     private let timerInterval: TimeInterval = 4
-    private let ocrInterval: TimeInterval = 20
+    private let ocrInterval: TimeInterval = 60
+    private let minimumContextDwell: TimeInterval = 15
+    private let sessionHeartbeatInterval: TimeInterval = 60
 
     private weak var store: MemoryStore?
     private var timer: Timer?
@@ -53,10 +70,21 @@ final class PassiveCaptureMonitor: ObservableObject {
     private var ocrDigests: [String: String] = [:]
     private var textBaselines: [String: String] = [:]
     private var lastFocusedTextKey: String?
+    private var observedContextKey: String?
+    private var observedContextSince: Date?
+    private var lastWindowCaptureAt: Date?
+    private var lastBrowserCaptureAt: Date?
 
     init() {
         isEnabled = UserDefaults.standard.object(forKey: Self.enabledDefaultsKey) as? Bool ?? false
         isOCREnabled = UserDefaults.standard.object(forKey: Self.ocrEnabledDefaultsKey) as? Bool ?? false
+        capturesWindows = UserDefaults.standard.object(forKey: Self.windowsDefaultsKey) as? Bool ?? true
+        capturesBrowser = UserDefaults.standard.object(forKey: Self.browserDefaultsKey) as? Bool ?? true
+        capturesTyping = UserDefaults.standard.object(forKey: Self.typingDefaultsKey) as? Bool ?? true
+        if ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1" {
+            isEnabled = false
+            isOCREnabled = false
+        }
     }
 
     func configure(store: MemoryStore) {
@@ -195,20 +223,41 @@ final class PassiveCaptureMonitor: ObservableObject {
 
         lastReadableContext = context
 
-        if let page = browserReader.readPage(for: context), privacyFilter.allows(page: page) {
+        let now = Date()
+        if observedContextKey != context.contextKey {
+            observedContextKey = context.contextKey
+            observedContextSince = now
+            statusText = "正在确认稳定工作上下文..."
+            return
+        }
+        guard let observedContextSince,
+              now.timeIntervalSince(observedContextSince) >= minimumContextDwell else {
+            statusText = "正在确认稳定工作上下文..."
+            return
+        }
+
+        if capturesBrowser,
+           let page = browserReader.readPage(for: context),
+           privacyFilter.allows(page: page) {
             captureBrowserPage(page, context: context)
-        } else {
+        } else if capturesWindows {
             captureActiveWindow(context)
         }
 
-        captureFocusedText(context)
+        if capturesTyping { captureFocusedText(context) }
         captureWindowOCR(context, force: false)
         statusText = "无感记录运行中"
     }
 
     private func captureBrowserPage(_ page: BrowserPageContext, context: ActiveAppContext) {
-        guard lastBrowserKey != page.key else { return }
+        let now = Date()
+        if lastBrowserKey == page.key,
+           let lastBrowserCaptureAt,
+           now.timeIntervalSince(lastBrowserCaptureAt) < sessionHeartbeatInterval {
+            return
+        }
         lastBrowserKey = page.key
+        lastBrowserCaptureAt = now
 
         let pageText = browserReader.readPageText(for: context).flatMap(normalizedPageText)
         let content: String
@@ -255,8 +304,14 @@ final class PassiveCaptureMonitor: ObservableObject {
     }
 
     private func captureActiveWindow(_ context: ActiveAppContext) {
-        guard lastWindowKey != context.contextKey else { return }
+        let now = Date()
+        if lastWindowKey == context.contextKey,
+           let lastWindowCaptureAt,
+           now.timeIntervalSince(lastWindowCaptureAt) < sessionHeartbeatInterval {
+            return
+        }
         lastWindowKey = context.contextKey
+        lastWindowCaptureAt = now
 
         let title = context.windowTitle ?? context.appName
         let content = """

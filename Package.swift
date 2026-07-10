@@ -17,6 +17,14 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]
+        ),
+        .testTarget(
+            name: "WorkMemoryTests",
+            dependencies: ["WorkMemory"],
+            path: "Tests/WorkMemoryTests",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
         )
     ]
 )

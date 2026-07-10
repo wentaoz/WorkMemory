@@ -4,6 +4,7 @@ struct MemoryListView: View {
     @EnvironmentObject private var store: MemoryStore
     let title: String
     let items: [MemoryItem]
+    var showsLoadMore = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,6 +44,19 @@ struct MemoryListView: View {
                         MemoryRowView(item: item)
                             .environmentObject(store)
                     }
+                }
+
+                if showsLoadMore && store.items.count < store.totalMemoryCount {
+                    HStack {
+                        Spacer()
+                        Button {
+                            store.loadMoreMemories()
+                        } label: {
+                            Label("加载更多", systemImage: "arrow.down.circle")
+                        }
+                        Spacer()
+                    }
+                    .padding(.top, 4)
                 }
             }
         }

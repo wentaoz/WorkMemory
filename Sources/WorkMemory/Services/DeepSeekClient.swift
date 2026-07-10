@@ -1,8 +1,8 @@
 import Foundation
 
 struct DeepSeekClient {
-    private let defaultMaxTokens = 50_000
-    private let requestTimeout: TimeInterval = 600
+    private let defaultMaxTokens = 4_000
+    private let requestTimeout: TimeInterval = 120
 
     struct Configuration {
         var apiKey: String
@@ -28,6 +28,19 @@ struct DeepSeekClient {
                 return message
             }
         }
+    }
+
+    func testConnection(configuration: Configuration) async throws -> String {
+        let response = try await complete(
+            messages: [
+                .init(role: "system", content: "你是 API 连通性测试助手，只输出 OK。"),
+                .init(role: "user", content: "请回复 OK")
+            ],
+            configuration: configuration,
+            temperature: 0,
+            maxTokens: 16
+        )
+        return response.clipped(to: 80)
     }
 
     func summarizeDailyRecords(
@@ -80,12 +93,21 @@ struct DeepSeekClient {
         question: String,
         items: [MemoryItem],
         scope: MemoryQueryScope,
+        conversationContext: String = "",
         configuration: Configuration
     ) async throws -> String {
         try await complete(
             messages: [
                 .init(role: "system", content: askMemorySystemPrompt),
-                .init(role: "user", content: askMemoryUserPrompt(question: question, items: items, scope: scope))
+                .init(
+                    role: "user",
+                    content: askMemoryUserPrompt(
+                        question: question,
+                        items: items,
+                        scope: scope,
+                        conversationContext: conversationContext
+                    )
+                )
             ],
             configuration: configuration,
             temperature: 0.1,
@@ -175,7 +197,7 @@ struct DeepSeekClient {
             throw ClientError.missingAPIKey
         }
 
-        guard let endpoint = URL(string: normalizedBaseURL(configuration.baseURL) + "/chat/completions") else {
+        guard let endpoint = chatCompletionsEndpoint(baseURL: configuration.baseURL) else {
             AppLogStore.shared.error(
                 """
                 模型 API Base URL 无效
@@ -220,7 +242,7 @@ struct DeepSeekClient {
         do {
             request.httpBody = try JSONEncoder().encode(body)
             let startedAt = Date()
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await dataWithRetry(for: request)
             let elapsedText = String(format: "%.2f", Date().timeIntervalSince(startedAt))
 
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -318,6 +340,52 @@ struct DeepSeekClient {
                 "模型 API 网络或请求错误：\(oneLine(error.localizedDescription).clipped(to: 180))。详情见运行日志。"
             )
         }
+    }
+
+    private func dataWithRetry(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            group.addTask {
+                try await performDataWithRetry(for: request)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 180 * 1_000_000_000)
+                throw URLError(.timedOut)
+            }
+            guard let result = try await group.next() else { throw URLError(.unknown) }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func performDataWithRetry(for request: URLRequest) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 1...3 {
+            try Task.checkCancellation()
+            do {
+                let result = try await URLSession.shared.data(for: request)
+                if let response = result.1 as? HTTPURLResponse,
+                   (response.statusCode == 408 || response.statusCode == 429 || (500..<600).contains(response.statusCode)),
+                   attempt < 3 {
+                    try await Task.sleep(nanoseconds: UInt64(350 * pow(2, Double(attempt - 1))) * 1_000_000)
+                    continue
+                }
+                return result
+            } catch {
+                if error is CancellationError { throw error }
+                lastError = error
+                guard attempt < 3, isRetryableNetworkError(error) else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(350 * pow(2, Double(attempt - 1))) * 1_000_000)
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
+    private func isRetryableNetworkError(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return [
+            .timedOut, .networkConnectionLost, .cannotConnectToHost,
+            .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet
+        ].contains(error.code)
     }
 
     private var dailySummarySystemPrompt: String {
@@ -488,12 +556,20 @@ struct DeepSeekClient {
         """
     }
 
-    private func askMemoryUserPrompt(question: String, items: [MemoryItem], scope: MemoryQueryScope) -> String {
+    private func askMemoryUserPrompt(
+        question: String,
+        items: [MemoryItem],
+        scope: MemoryQueryScope,
+        conversationContext: String
+    ) -> String {
         let records = formattedRecords(items, contentLimit: 1_000)
 
         return """
         查询范围：\(scope.label)
         用户问题：\(question)
+
+        最近对话：
+        \(conversationContext.nilIfBlank ?? "无")
 
         请基于下面记录回答。重要结论必须带 [记录编号]。
 
@@ -508,9 +584,11 @@ struct DeepSeekClient {
         - 只输出 JSON 数组，不要输出 Markdown，不要解释。
         - 不要编造记录中没有的任务。
         - 合并重复任务。
+        - dueDate 使用 ISO 8601（例如 2026-07-12T18:00:00+08:00）；不明确则为空字符串。
+        - priority 只能是 low、normal、high、urgent；不明确时使用 normal。
         - 如果项目、负责人、截止时间不明确，输出空字符串。
         - sourceIndex 使用最能支持该任务的记录编号。
-        JSON 字段：title, project, owner, dueDateText, evidence, sourceIndex
+        JSON 字段：title, project, owner, dueDateText, dueDate, priority, evidence, sourceIndex
         """
     }
 
@@ -573,6 +651,8 @@ struct DeepSeekClient {
             "project": "WorkMemory",
             "owner": "",
             "dueDateText": "",
+            "dueDate": "",
+            "priority": "normal",
             "evidence": "用户要求接入 DeepSeek API 并支持手动总结和 18:00 自动总结",
             "sourceIndex": 1
           }
@@ -603,6 +683,16 @@ struct DeepSeekClient {
     private func normalizedBaseURL(_ rawValue: String) -> String {
         rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func chatCompletionsEndpoint(baseURL: String) -> URL? {
+        guard let url = URL(string: normalizedBaseURL(baseURL) + "/chat/completions"),
+              let scheme = url.scheme?.lowercased(),
+              ["https", "http"].contains(scheme),
+              url.host?.nilIfBlank != nil else {
+            return nil
+        }
+        return url
     }
 
     private func oneLine(_ text: String) -> String {

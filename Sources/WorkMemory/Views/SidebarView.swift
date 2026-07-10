@@ -24,6 +24,9 @@ struct SidebarView: View {
                 Label("行动项", systemImage: "checklist")
                     .tag(SidebarSelection.actions)
 
+                Label("项目", systemImage: "folder")
+                    .tag(SidebarSelection.projects)
+
                 Label("运行日志", systemImage: "list.bullet.rectangle")
                     .tag(SidebarSelection.logs)
             }

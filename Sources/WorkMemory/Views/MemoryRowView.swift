@@ -81,6 +81,29 @@ struct MemoryRowView: View {
                 .menuStyle(.button)
                 .buttonStyle(.borderless)
 
+                Menu {
+                    Button("未归类") {
+                        store.updateMemory(item, projectID: nil, isPinned: item.isPinned)
+                    }
+                    ForEach(store.projects.filter { !$0.isArchived }) { project in
+                        Button(project.name) {
+                            store.updateMemory(item, projectID: project.id, isPinned: item.isPinned)
+                        }
+                    }
+                } label: {
+                    Label(store.projectName(for: item.projectID) ?? "项目", systemImage: "folder")
+                }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+
+                Button {
+                    store.updateMemory(item, projectID: item.projectID, isPinned: !item.isPinned)
+                } label: {
+                    Image(systemName: item.isPinned ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.borderless)
+                .help(item.isPinned ? "取消置顶" : "置顶")
+
                 Spacer()
 
                 Button(role: .destructive) {

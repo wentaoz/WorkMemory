@@ -6,6 +6,7 @@ enum SidebarSelection: Hashable {
     case summaries
     case askMemory
     case actions
+    case projects
     case logs
     case settings
     case category(MemoryCategory)
@@ -22,6 +23,8 @@ enum SidebarSelection: Hashable {
             return "ask-memory"
         case .actions:
             return "actions"
+        case .projects:
+            return "projects"
         case .logs:
             return "logs"
         case .settings:
@@ -43,6 +46,8 @@ enum SidebarSelection: Hashable {
             return "Ask Memory"
         case .actions:
             return "行动项"
+        case .projects:
+            return "项目"
         case .logs:
             return "运行日志"
         case .settings:
@@ -58,6 +63,7 @@ enum SidebarSelection: Hashable {
         if id == "summaries" { return .summaries }
         if id == "ask-memory" { return .askMemory }
         if id == "actions" { return .actions }
+        if id == "projects" { return .projects }
         if id == "logs" { return .logs }
         if id == "settings" { return .settings }
 

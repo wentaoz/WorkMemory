@@ -7,12 +7,26 @@ struct PassiveCaptureControlView: View {
         VStack(alignment: .leading, spacing: 12) {
             controlRows
 
+            if monitor.isEnabled {
+                sourceToggles
+            }
+
             permissionRows
 
             statusRows
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var sourceToggles: some View {
+        HStack(spacing: 18) {
+            Toggle("窗口", isOn: $monitor.capturesWindows)
+            Toggle("网页", isOn: $monitor.capturesBrowser)
+            Toggle("输入", isOn: $monitor.capturesTyping)
+        }
+        .toggleStyle(.checkbox)
+        .font(.caption)
     }
 
     private var controlRows: some View {

@@ -32,11 +32,19 @@ final class DeepSeekSettings: ObservableObject {
         }
     }
 
+    @Published var autoSummaryHour: Int {
+        didSet {
+            autoSummaryHour = min(23, max(0, autoSummaryHour))
+            UserDefaults.standard.set(autoSummaryHour, forKey: Self.autoSummaryHourKey)
+        }
+    }
+
     private static let providerPresetKey = "modelAPI.providerPreset"
     private static let apiKeyKey = "deepseek.apiKey"
     private static let baseURLKey = "deepseek.baseURL"
     private static let modelKey = "deepseek.model"
     private static let autoSummaryEnabledKey = "deepseek.autoSummaryEnabled"
+    private static let autoSummaryHourKey = "deepseek.autoSummaryHour"
 
     init() {
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerPresetKey)
@@ -50,6 +58,10 @@ final class DeepSeekSettings: ObservableObject {
             ?? initialProvider.defaultModel
             ?? "deepseek-v4-pro"
         autoSummaryEnabled = UserDefaults.standard.object(forKey: Self.autoSummaryEnabledKey) as? Bool ?? false
+        autoSummaryHour = UserDefaults.standard.object(forKey: Self.autoSummaryHourKey) as? Int ?? 18
+        if ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1" {
+            autoSummaryEnabled = false
+        }
     }
 
     func applyProviderPreset(_ preset: ModelProviderPreset) {

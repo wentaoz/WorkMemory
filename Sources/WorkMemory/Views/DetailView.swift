@@ -33,6 +33,18 @@ struct DetailView: View {
                 }
             }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { store.selectedActivity != nil },
+                set: { if !$0 { store.clearSelection() } }
+            )
+        ) {
+            if let activity = store.selectedActivity {
+                ActivityDetailSheetView(activity: activity) {
+                    store.clearSelection()
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -71,7 +83,8 @@ struct DetailView: View {
 
             MemoryListView(
                 title: selection.title,
-                items: filteredItems
+                items: filteredItems,
+                showsLoadMore: true
             )
             .environmentObject(store)
 
@@ -91,11 +104,51 @@ struct DetailView: View {
         case .actions:
             ActionItemsView()
 
+        case .projects:
+            ProjectsView()
+
         case .logs:
             LogsView()
 
         case .settings:
             SettingsView()
         }
+    }
+}
+
+private struct ActivityDetailSheetView: View {
+    @EnvironmentObject private var store: MemoryStore
+    let activity: ActivitySession
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label(activity.displayTitle, systemImage: activity.source.systemImage)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button("提炼为记忆") {
+                    store.promoteActivity(activity)
+                    onClose()
+                }
+                Button("关闭", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+            HStack(spacing: 12) {
+                Text("\(DateFormatting.dateTime.string(from: activity.startedAt)) - \(DateFormatting.dateTime.string(from: activity.endedAt))")
+                Text("\(activity.eventCount) 次更新")
+                if activity.isArchived { Text("已归档") }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Divider()
+            ScrollView {
+                Text(activity.content)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 520)
     }
 }

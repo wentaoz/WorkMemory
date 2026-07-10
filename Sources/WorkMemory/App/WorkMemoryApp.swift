@@ -15,8 +15,10 @@ struct WorkMemoryApp: App {
     @StateObject private var askMemoryService = AskMemoryService()
     @StateObject private var actionItemExtractionService = ActionItemExtractionService()
     @StateObject private var documentImportService = DocumentImportService()
+    @StateObject private var reminderExportService = ReminderExportService()
     @StateObject private var appLogStore = AppLogStore.shared
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("onboarding.completed.v110") private var onboardingCompleted = false
 
     var body: some Scene {
         WindowGroup("WorkMemory", id: "main") {
@@ -32,9 +34,21 @@ struct WorkMemoryApp: App {
                 .environmentObject(askMemoryService)
                 .environmentObject(actionItemExtractionService)
                 .environmentObject(documentImportService)
+                .environmentObject(reminderExportService)
                 .environmentObject(appLogStore)
                 .frame(minWidth: 920, minHeight: 620)
+                .sheet(isPresented: Binding(
+                    get: { !onboardingCompleted && !store.hasExistingData },
+                    set: { if !$0 { onboardingCompleted = true } }
+                )) {
+                    OnboardingView { onboardingCompleted = true }
+                        .environmentObject(passiveCaptureMonitor)
+                        .environmentObject(deepSeekSettings)
+                }
                 .onAppear {
+                    if store.hasExistingData {
+                        onboardingCompleted = true
+                    }
                     passiveCaptureMonitor.configure(store: store)
                     globalDictationService.configure(store: store)
                     dailySummaryService.configure(store: store, settings: deepSeekSettings)
@@ -75,7 +89,7 @@ struct WorkMemoryApp: App {
                 Toggle("Paste After Dictation", isOn: $globalDictationService.pasteAfterDictation)
                 Toggle("Passive Capture", isOn: $passiveCaptureMonitor.isEnabled)
                 Toggle("Local OCR", isOn: $passiveCaptureMonitor.isOCREnabled)
-                Toggle("Auto Summary at 18:00", isOn: $deepSeekSettings.autoSummaryEnabled)
+                Toggle("Auto Summary at \(String(format: "%02d:00", deepSeekSettings.autoSummaryHour))", isOn: $deepSeekSettings.autoSummaryEnabled)
 
                 Button("Summarize Today") {
                     dailySummaryService.summarizeTodayManually()
@@ -150,7 +164,10 @@ struct WorkMemoryApp: App {
             }
             .disabled(dailySummaryService.isSummarizing || store.selectedForSummaryCount == 0)
 
-            Toggle("Auto Summary 18:00", isOn: $deepSeekSettings.autoSummaryEnabled)
+            Toggle(
+                "Auto Summary \(String(format: "%02d:00", deepSeekSettings.autoSummaryHour))",
+                isOn: $deepSeekSettings.autoSummaryEnabled
+            )
 
             Text(dailySummaryService.statusText)
 

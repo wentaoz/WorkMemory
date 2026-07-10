@@ -41,6 +41,22 @@ struct AISummaryControlView: View {
                 }
             }
             .font(.caption)
+
+            if dailySummary.isSummarizing {
+                HStack(spacing: 10) {
+                    ProgressView(value: dailySummary.progress)
+                    Text("\(Int(dailySummary.progress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button {
+                        dailySummary.cancel()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("取消总结")
+                }
+            }
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))

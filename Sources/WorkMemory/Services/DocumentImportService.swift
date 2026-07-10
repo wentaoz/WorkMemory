@@ -22,12 +22,14 @@ final class DocumentImportService: ObservableObject {
 
     private static let folderPathKey = "documentImport.folderPath"
     private static let autoImportEnabledKey = "documentImport.autoImportEnabled"
+    private static let folderBookmarkKey = "documentImport.folderBookmark"
 
     private weak var memoryStore: MemoryStore?
     private weak var indexStore: DocumentImportIndexStore?
     private var settings: DeepSeekSettings?
     private let extractor = DocumentTextExtractor()
     private let client = DeepSeekClient()
+    private let chunker = DocumentChunker()
     private var timer: Timer?
     private let scanInterval: TimeInterval = 180
     private let maxFilesPerScan = 12
@@ -35,6 +37,9 @@ final class DocumentImportService: ObservableObject {
     init() {
         folderPath = UserDefaults.standard.string(forKey: Self.folderPathKey) ?? ""
         autoImportEnabled = UserDefaults.standard.object(forKey: Self.autoImportEnabledKey) as? Bool ?? false
+        if ProcessInfo.processInfo.environment["WORKMEMORY_TEST_MODE"] == "1" {
+            autoImportEnabled = false
+        }
     }
 
     func configure(
@@ -60,6 +65,9 @@ final class DocumentImportService: ObservableObject {
 
         if panel.runModal() == .OK, let url = panel.url {
             folderPath = url.path
+            if let bookmark = try? SecurityScopedFolder.bookmark(for: url) {
+                UserDefaults.standard.set(bookmark, forKey: Self.folderBookmarkKey)
+            }
             statusText = "已选择：\(url.lastPathComponent)"
         }
     }
@@ -95,7 +103,10 @@ final class DocumentImportService: ObservableObject {
             return
         }
 
-        let folderURL = URL(fileURLWithPath: trimmedPath, isDirectory: true)
+        let folderURL = SecurityScopedFolder.resolve(
+            bookmark: UserDefaults.standard.data(forKey: Self.folderBookmarkKey),
+            fallbackPath: trimmedPath
+        )
         guard FileManager.default.fileExists(atPath: folderURL.path) else {
             statusText = "文件夹不存在"
             AppLogStore.shared.error("文档扫描失败：文件夹不存在 \(trimmedPath)", category: "文档导入")
@@ -106,7 +117,9 @@ final class DocumentImportService: ObservableObject {
         statusText = "正在扫描文档..."
 
         do {
-            let candidates = try discoverCandidates(in: folderURL)
+            let candidates = try SecurityScopedFolder.access(folderURL) {
+                try discoverCandidates(in: folderURL)
+            }
                 .filter { indexStore.needsProcessing($0) }
                 .prefix(maxFilesPerScan)
 
@@ -124,7 +137,9 @@ final class DocumentImportService: ObservableObject {
             for candidate in candidates {
                 do {
                     indexStore.mark(candidate, status: .pending, message: "正在提取文本")
-                    let extracted = try extractor.extract(from: URL(fileURLWithPath: candidate.path))
+                    let extracted = try SecurityScopedFolder.access(folderURL) {
+                        try extractor.extract(from: URL(fileURLWithPath: candidate.path))
+                    }
 
                     indexStore.mark(candidate, status: .pending, message: "正在调用模型摘要")
                     let summary = try await client.summarizeDocument(
@@ -139,12 +154,15 @@ final class DocumentImportService: ObservableObject {
                         )
                     )
 
-                    memoryStore.addDocumentSummary(
+                    let memory = memoryStore.addDocumentSummary(
                         content: summary,
                         fileName: candidate.fileName,
                         filePath: candidate.path,
                         modifiedAt: candidate.modifiedAt
                     )
+                    if let memory {
+                        memoryStore.storeDocumentChunks(chunker.chunks(for: extracted, memoryID: memory.id), for: memory.id)
+                    }
                     indexStore.mark(candidate, status: .imported, message: "\(extracted.format.uppercased()) 摘要已加入今日记忆")
                     importedCount += 1
                 } catch {

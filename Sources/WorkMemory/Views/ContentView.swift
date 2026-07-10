@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: MemoryStore
-    @SceneStorage("selectedSidebarID") private var selectedSidebarID = SidebarSelection.today.id
+    @State private var selectedSidebarID = SidebarSelection.today.id
 
     private var selection: Binding<SidebarSelection> {
         Binding(
