@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.0 - 2026-10-27
+
+### Added
+
+- Recoverable database error screen with retry and backup restore when SQLite fails to open.
+- Keychain storage for model API keys, with one-time migration from plaintext UserDefaults.
+- Configurable privacy rules (bundle IDs, keywords, domains, URL path segments) and capture pause for 15 minutes or 1 hour.
+
+### Changed
+
+- Stores share one SQLite connection opened with `FULLMUTEX` and a busy timeout.
+- Ask Memory ranks on a background queue: FTS first, then a bounded candidate set, with at most 48 new embeddings per question.
+- Privacy matching uses word boundaries and exact URL path segments instead of brittle substrings such as `auth` or `private`.
+
+### Fixed
+
+- Startup no longer wipes full-text rows for every archived activity on each launch.
+- Database open failures no longer `fatalError`.
+- `NLEmbedding` is loaded lazily and falls back to lexical search if the model is unavailable.
+
 ## 1.1.0 - 2026-07-10
 
 ### Added

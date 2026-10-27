@@ -40,7 +40,7 @@ final class DeepSeekSettings: ObservableObject {
     }
 
     private static let providerPresetKey = "modelAPI.providerPreset"
-    static let apiKeyKey = "deepseek.apiKey"
+    nonisolated static let apiKeyKey = "deepseek.apiKey"
     private static let baseURLKey = "deepseek.baseURL"
     private static let modelKey = "deepseek.model"
     private static let autoSummaryEnabledKey = "deepseek.autoSummaryEnabled"

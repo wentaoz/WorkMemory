@@ -17,6 +17,13 @@ WorkMemory 是一款 macOS 本地工作记忆应用。它把窗口、网页、�
 
 WorkMemory is a local macOS work-memory app that groups captured window, web, typing, and OCR context into work sessions, then turns those sessions into searchable memories, projects, summaries, and actions.
 
+## Download
+
+- Latest: [WorkMemory 1.2.0](https://github.com/wentaoz/WorkMemory/releases/tag/v1.2.0) (`WorkMemory-1.2.0-universal.dmg`)
+- Previous: [WorkMemory 1.1.0](https://github.com/wentaoz/WorkMemory/releases/tag/v1.1.0)
+
+This public build is signed with an Apple Development identity and is **not notarized**. First launch may require right-click → Open.
+
 ## Requirements
 
 - macOS 13 or later
