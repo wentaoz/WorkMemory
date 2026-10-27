@@ -240,6 +240,44 @@ final class WorkMemoryCoreTests: XCTestCase {
         XCTAssertNil(database.loadEmbedding(reference: .init(kind: .chunk, id: chunk.id), model: "test"))
     }
 
+    func testStoresShareOneDatabaseConnection() throws {
+        let directory = try temporaryDirectory()
+        let first = try SQLiteDatabase.openShared(supportURL: directory)
+        let second = try SQLiteDatabase.openShared(supportURL: directory)
+        XCTAssertTrue(first === second)
+    }
+
+    func testDatabaseOpenFailureIsRecoverable() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("wm-not-dir-\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: file)
+        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+
+        let store = MemoryStore(supportURL: file)
+        XCTAssertNotNil(store.openFailure)
+        XCTAssertFalse(store.isDatabaseAvailable)
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.activities.isEmpty)
+    }
+
+    func testHybridSearchFallsBackToLexicalWhenCandidatesAreLimited() throws {
+        let directory = try temporaryDirectory()
+        let database = try SQLiteDatabase(supportURL: directory)
+        let target = MemoryItem(
+            title: "Northstar launch notes",
+            content: "Keep the zircon checklist next to the release plan.",
+            category: .decision
+        )
+        database.upsertMemory(target)
+
+        let results = HybridMemorySearch(database: database).search(
+            question: "zircon checklist",
+            scope: .all,
+            limit: 5
+        )
+
+        XCTAssertEqual(results.first?.record.reference, RecordReference(kind: .memory, id: target.id))
+    }
+
     func testLargeWorkspaceStartupFixtureWhenProvided() throws {
         guard let path = ProcessInfo.processInfo.environment["WORKMEMORY_LARGE_FIXTURE_DIR"] else {
             throw XCTSkip("Set WORKMEMORY_LARGE_FIXTURE_DIR to run the large-workspace startup check")

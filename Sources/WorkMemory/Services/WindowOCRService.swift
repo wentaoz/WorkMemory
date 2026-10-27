@@ -9,40 +9,44 @@ struct OCRResult {
 
 struct WindowOCRService {
     func recognizeText(in context: ActiveAppContext) -> OCRResult? {
-        guard let windowID = context.windowID else { return nil }
-        guard let image = captureWindowImage(windowID: windowID) else { return nil }
+        autoreleasepool {
+            guard let windowID = context.windowID else { return nil }
+            guard let image = captureWindowImage(windowID: windowID) else { return nil }
 
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
-        request.usesLanguageCorrection = true
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+            request.usesLanguageCorrection = true
 
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+            let handler = VNImageRequestHandler(cgImage: image, options: [:])
 
-        do {
-            try handler.perform([request])
-        } catch {
-            return nil
-        }
-
-        let lines = (request.results ?? [])
-            .compactMap { observation in
-                observation.topCandidates(1).first?.string.nilIfBlank
+            do {
+                try handler.perform([request])
+            } catch {
+                return nil
             }
 
-        let text = merge(lines: lines)
-        guard text.count >= 40 else { return nil }
+            let lines = (request.results ?? [])
+                .compactMap { observation in
+                    observation.topCandidates(1).first?.string.nilIfBlank
+                }
 
-        return OCRResult(text: text, lineCount: lines.count)
+            let text = merge(lines: lines)
+            guard text.count >= 40 else { return nil }
+
+            return OCRResult(text: text, lineCount: lines.count)
+        }
     }
 
     private func captureWindowImage(windowID: CGWindowID) -> CGImage? {
-        CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            windowID,
-            [.boundsIgnoreFraming, .bestResolution]
-        )
+        autoreleasepool {
+            CGWindowListCreateImage(
+                .null,
+                .optionIncludingWindow,
+                windowID,
+                [.boundsIgnoreFraming, .bestResolution]
+            )
+        }
     }
 
     private func merge(lines: [String]) -> String {

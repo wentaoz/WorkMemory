@@ -3,20 +3,29 @@ import Foundation
 final class DocumentImportIndexStore: ObservableObject {
     @Published private(set) var records: [DocumentImportRecord] = []
 
-    private let database: SQLiteDatabase
+    private var database: SQLiteDatabase
     private let legacyFileURL: URL
 
-    init(fileManager: FileManager = .default) {
-        let supportURL = WorkMemoryDataLocation.supportURL(fileManager: fileManager)
+    init(fileManager: FileManager = .default, supportURL explicitSupportURL: URL? = nil) {
+        let supportURL = explicitSupportURL ?? WorkMemoryDataLocation.supportURL(fileManager: fileManager)
 
         self.legacyFileURL = supportURL.appendingPathComponent("document_index.json")
         do {
-            self.database = try SQLiteDatabase(fileManager: fileManager)
+            self.database = try SQLiteDatabase.openShared(fileManager: fileManager, supportURL: supportURL)
+            migrateLegacyJSONIfNeeded(fileManager: fileManager)
+            records = database.loadDocumentImportRecords()
         } catch {
-            fatalError("Unable to open WorkMemory document index: \(error.localizedDescription)")
+            self.database = SQLiteDatabase.makeInMemoryFallback()
+            AppLogStore.shared.error(
+                "文档索引数据库打开失败：\(error.localizedDescription)",
+                category: "数据库"
+            )
         }
+    }
 
-        migrateLegacyJSONIfNeeded(fileManager: fileManager)
+    func reload(using database: SQLiteDatabase) {
+        self.database = database
+        migrateLegacyJSONIfNeeded(fileManager: .default)
         records = database.loadDocumentImportRecords()
     }
 

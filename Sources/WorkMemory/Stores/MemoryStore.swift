@@ -16,12 +16,14 @@ final class MemoryStore: ObservableObject {
     @Published private(set) var selectedForSummaryIDs: Set<MemoryItem.ID> = []
     @Published var composerFocusRequest = UUID()
     @Published var todayViewRequest = UUID()
+    @Published private(set) var openFailure: DatabaseOpenFailure?
 
     private let classifier: MemoryClassifier
-    let database: SQLiteDatabase
+    private(set) var database: SQLiteDatabase
+    private let fileManager: FileManager
+    private let supportURL: URL
     private let legacyFileURL: URL
     private let pageSize = 100
-    private lazy var hybridSearch = HybridMemorySearch(database: database)
 
     init(
         classifier: MemoryClassifier = MemoryClassifier(),
@@ -29,16 +31,66 @@ final class MemoryStore: ObservableObject {
         supportURL explicitSupportURL: URL? = nil
     ) {
         self.classifier = classifier
-
+        self.fileManager = fileManager
         let supportURL = explicitSupportURL ?? WorkMemoryDataLocation.supportURL(fileManager: fileManager)
-
+        self.supportURL = supportURL
         self.legacyFileURL = supportURL.appendingPathComponent("memories.json")
-        do {
-            self.database = try SQLiteDatabase(fileManager: fileManager, supportURL: supportURL)
-        } catch {
-            fatalError("Unable to open WorkMemory database: \(error.localizedDescription)")
-        }
 
+        do {
+            self.database = try SQLiteDatabase.openShared(fileManager: fileManager, supportURL: supportURL)
+            loadPersistedState()
+        } catch {
+            self.openFailure = DatabaseOpenFailure.make(error: error, supportURL: supportURL)
+            self.database = SQLiteDatabase.makeInMemoryFallback()
+            AppLogStore.shared.error(
+                "数据库打开失败：\(error.localizedDescription)\n路径：\(supportURL.path)",
+                category: "数据库"
+            )
+        }
+    }
+
+    var isDatabaseAvailable: Bool { openFailure == nil }
+
+    func retryOpen() {
+        SQLiteDatabase.evictShared(supportURL: supportURL)
+        do {
+            database = try SQLiteDatabase.openShared(fileManager: fileManager, supportURL: supportURL)
+            openFailure = nil
+            loadPersistedState()
+            AppLogStore.shared.info("数据库已重新打开。", category: "数据库")
+        } catch {
+            openFailure = DatabaseOpenFailure.make(error: error, supportURL: supportURL)
+            database = SQLiteDatabase.makeInMemoryFallback()
+            AppLogStore.shared.error(
+                "数据库重试仍失败：\(error.localizedDescription)",
+                category: "数据库"
+            )
+        }
+    }
+
+    func restoreFromBackup(_ backupURL: URL) {
+        SQLiteDatabase.evictShared(supportURL: supportURL)
+        let destination = supportURL.appendingPathComponent("workmemory.sqlite")
+        do {
+            try fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
+            for suffix in ["", "-wal", "-shm"] {
+                let extra = URL(fileURLWithPath: destination.path + suffix)
+                if fileManager.fileExists(atPath: extra.path) {
+                    try fileManager.removeItem(at: extra)
+                }
+            }
+            try fileManager.copyItem(at: backupURL, to: destination)
+            retryOpen()
+        } catch {
+            openFailure = DatabaseOpenFailure.make(error: error, supportURL: supportURL)
+            AppLogStore.shared.error(
+                "从备份恢复失败：\(error.localizedDescription)",
+                category: "数据库"
+            )
+        }
+    }
+
+    private func loadPersistedState() {
         migrateLegacyJSONIfNeeded(fileManager: fileManager)
         database.archiveActivities(
             endingBefore: Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
@@ -181,8 +233,16 @@ final class MemoryStore: ObservableObject {
         scope: MemoryQueryScope,
         projectID: UUID? = nil,
         limit: Int = 24
-    ) -> [RankedMemoryResult] {
-        hybridSearch.search(question: question, scope: scope, projectID: projectID, limit: limit)
+    ) async -> [RankedMemoryResult] {
+        let database = self.database
+        return await Task.detached(priority: .userInitiated) {
+            HybridMemorySearch(database: database).search(
+                question: question,
+                scope: scope,
+                projectID: projectID,
+                limit: limit
+            )
+        }.value
     }
 
     var openActionItems: [String] {

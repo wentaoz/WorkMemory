@@ -3,9 +3,11 @@ import NaturalLanguage
 
 final class HybridMemorySearch {
     private let database: SQLiteDatabase
-    private let embedding = NLEmbedding.sentenceEmbedding(for: .simplifiedChinese)
     private let modelName = "apple-nl-zh-sentence-v1"
     private let calendar = Calendar.current
+    private let recentCandidateLimit = 180
+    private let ftsCandidateLimit = 80
+    private let maxNewEmbeddingsPerSearch = 48
 
     init(database: SQLiteDatabase) {
         self.database = database
@@ -29,27 +31,49 @@ final class HybridMemorySearch {
             startDate = nil
         }
 
-        let textMatches = database.fullTextMatchedReferences(query: query)
+        let textMatches = database.fullTextMatchedReferences(query: query, limit: ftsCandidateLimit)
+        var seen = Set<RecordReference>()
+        var candidates: [SearchableRecord] = []
+
+        func append(_ records: [SearchableRecord]) {
+            for record in records where seen.insert(record.reference).inserted {
+                if projectID == nil || record.projectID == projectID {
+                    candidates.append(record)
+                }
+            }
+        }
+
+        append(database.loadSearchableRecords(references: Array(textMatches), limit: ftsCandidateLimit))
+        if candidates.count < recentCandidateLimit {
+            append(
+                database.loadSearchableRecords(
+                    startDate: startDate,
+                    limit: recentCandidateLimit - candidates.count
+                )
+            )
+        }
+
         let queryVector: [Float]?
-        if let values = embedding?.vector(for: query) {
+        if let values = Self.embeddingModel()?.vector(for: query) {
             queryVector = values.map { Float($0) }
         } else {
             queryVector = nil
         }
-        let now = Date()
-        let candidates = database.loadSearchableRecords(startDate: startDate)
-            .filter { projectID == nil || $0.projectID == projectID }
 
+        let now = Date()
+        var embeddingsGenerated = 0
         return candidates.compactMap { record -> RankedMemoryResult? in
             let semanticScore: Double
             if let queryVector,
-               let candidateVector = vector(for: record),
+               let candidateVector = vector(for: record, embeddingsGenerated: &embeddingsGenerated),
                candidateVector.count == queryVector.count {
                 semanticScore = cosineSimilarity(queryVector, candidateVector)
             } else {
                 semanticScore = 0
             }
-            let textScore = textMatches.contains(record.reference) ? 1.0 : lexicalOverlap(query, record.content + " " + record.title)
+            let textScore = textMatches.contains(record.reference)
+                ? 1.0
+                : lexicalOverlap(query, record.content + " " + record.title)
             let ageDays = max(0, now.timeIntervalSince(record.createdAt) / 86_400)
             let recencyScore = 1 / (1 + ageDays / 14)
             let pinScore = record.isPinned ? 1.0 : 0
@@ -62,13 +86,15 @@ final class HybridMemorySearch {
         .map { $0 }
     }
 
-    private func vector(for record: SearchableRecord) -> [Float]? {
+    private func vector(for record: SearchableRecord, embeddingsGenerated: inout Int) -> [Float]? {
         if let stored = database.loadEmbedding(reference: record.reference, model: modelName) {
             return stored
         }
-        guard let values = embedding?.vector(for: record.title + "\n" + record.content.clipped(to: 4_000)) else {
+        guard embeddingsGenerated < maxNewEmbeddingsPerSearch else { return nil }
+        guard let values = Self.embeddingModel()?.vector(for: record.title + "\n" + record.content.clipped(to: 4_000)) else {
             return nil
         }
+        embeddingsGenerated += 1
         let generated = values.map { Float($0) }
         database.upsertEmbedding(reference: record.reference, model: modelName, vector: generated)
         return generated
@@ -107,5 +133,25 @@ final class HybridMemorySearch {
             return true
         }
         return tokens
+    }
+
+    private static let embeddingLock = NSLock()
+    private static var cachedEmbedding: NLEmbedding?
+    private static var didAttemptEmbedding = false
+
+    static func embeddingModel() -> NLEmbedding? {
+        embeddingLock.lock()
+        defer { embeddingLock.unlock() }
+        if didAttemptEmbedding {
+            return cachedEmbedding
+        }
+        didAttemptEmbedding = true
+        for language in [NLLanguage.simplifiedChinese, .english] {
+            if let model = NLEmbedding.sentenceEmbedding(for: language) {
+                cachedEmbedding = model
+                return model
+            }
+        }
+        return nil
     }
 }
