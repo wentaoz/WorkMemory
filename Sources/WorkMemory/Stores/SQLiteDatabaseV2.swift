@@ -10,13 +10,23 @@ extension SQLiteDatabase {
         }.first ?? 0
         if version >= Self.currentSchemaVersion {
             try executeThrowing("CREATE INDEX IF NOT EXISTS idx_memories_context_source ON memories(context_source)")
-            try executeThrowing("BEGIN IMMEDIATE TRANSACTION")
-            do {
-                try migrateLegacyPassiveMemories()
-                try executeThrowing("COMMIT")
-            } catch {
-                try? executeThrowing("ROLLBACK")
-                throw error
+            let leftoverPassiveCount = query(
+                """
+                SELECT COUNT(*) FROM memories
+                WHERE context_source IN ('activeWindow','browser','ocr','typing')
+                """
+            ) { statement in
+                Int(sqlite3_column_int64(statement, 0))
+            }.first ?? 0
+            if leftoverPassiveCount > 0 {
+                try executeThrowing("BEGIN IMMEDIATE TRANSACTION")
+                do {
+                    try migrateLegacyPassiveMemories()
+                    try executeThrowing("COMMIT")
+                } catch {
+                    try? executeThrowing("ROLLBACK")
+                    throw error
+                }
             }
             return
         }
@@ -209,8 +219,10 @@ extension SQLiteDatabase {
         try executeThrowing(
             "DELETE FROM memory_fts WHERE id IN (SELECT id FROM memories WHERE context_source IN (\(passiveSources)))"
         )
+        try executeThrowing(
+            "DELETE FROM activity_fts WHERE id IN (SELECT id FROM memories WHERE context_source IN (\(passiveSources)))"
+        )
         try executeThrowing("DELETE FROM memories WHERE context_source IN (\(passiveSources))")
-        try executeThrowing("DELETE FROM activity_fts WHERE id IN (SELECT id FROM activities WHERE is_archived = 1)")
     }
 
     func loadRecentActivities(limit: Int = 100, includeArchived: Bool = false) -> [ActivitySession] {
@@ -308,15 +320,30 @@ extension SQLiteDatabase {
     }
 
     func archiveActivities(endingBefore date: Date) {
+        let cutoff = date.timeIntervalSince1970
+        try? executeThrowing(
+            """
+            DELETE FROM activity_fts
+            WHERE id IN (
+                SELECT id FROM activities
+                WHERE ended_at < ? AND is_archived = 0 AND promoted_memory_id IS NULL
+            )
+            """,
+            [.double(cutoff)]
+        )
+        try? executeThrowing(
+            """
+            DELETE FROM embeddings
+            WHERE record_kind = 'activity' AND record_id IN (
+                SELECT id FROM activities
+                WHERE ended_at < ? AND is_archived = 0 AND promoted_memory_id IS NULL
+            )
+            """,
+            [.double(cutoff)]
+        )
         try? executeThrowing(
             "UPDATE activities SET is_archived = 1 WHERE ended_at < ? AND promoted_memory_id IS NULL",
-            [.double(date.timeIntervalSince1970)]
-        )
-        try? executeThrowing(
-            "DELETE FROM activity_fts WHERE id IN (SELECT id FROM activities WHERE is_archived = 1)"
-        )
-        try? executeThrowing(
-            "DELETE FROM embeddings WHERE record_kind = 'activity' AND record_id IN (SELECT id FROM activities WHERE is_archived = 1)"
+            [.double(cutoff)]
         )
     }
 
@@ -363,7 +390,76 @@ extension SQLiteDatabase {
         .compactMap(loadMemory(id:))
     }
 
-    func loadSearchableRecords(startDate: Date?, limit: Int = 5_000) -> [SearchableRecord] {
+    func loadSearchableRecords(references: [RecordReference], limit: Int = 120) -> [SearchableRecord] {
+        var records: [SearchableRecord] = []
+        var seen = Set<RecordReference>()
+        for reference in references {
+            guard records.count < limit else { break }
+            guard seen.insert(reference).inserted else { continue }
+            if let record = loadSearchableRecord(reference) {
+                records.append(record)
+            }
+        }
+        return records
+    }
+
+    func loadSearchableRecord(_ reference: RecordReference) -> SearchableRecord? {
+        switch reference.kind {
+        case .memory:
+            guard let item = loadMemory(id: reference.id) else { return nil }
+            return SearchableRecord(
+                reference: reference,
+                title: item.title,
+                content: item.content,
+                createdAt: item.createdAt,
+                locator: "",
+                contextSummary: item.context?.summary ?? "",
+                projectID: item.projectID,
+                isPinned: item.isPinned
+            )
+        case .activity:
+            guard let activity = loadActivity(id: reference.id) else { return nil }
+            return SearchableRecord(
+                reference: reference,
+                title: activity.displayTitle,
+                content: activity.content,
+                createdAt: activity.endedAt,
+                locator: "",
+                contextSummary: activity.context?.summary ?? "",
+                projectID: activity.projectID,
+                isPinned: false
+            )
+        case .chunk:
+            return query(
+                """
+                SELECT c.id, m.title, c.content, m.created_at, c.locator, m.project_id, m.is_pinned
+                FROM memory_chunks c
+                JOIN memories m ON m.id = c.memory_id
+                WHERE c.id = ?
+                LIMIT 1
+                """,
+                [.text(reference.id.uuidString)]
+            ) { statement in
+                SearchableRecord(
+                    reference: RecordReference(
+                        kind: .chunk,
+                        id: UUID(uuidString: v2ColumnText(statement, 0) ?? "") ?? reference.id
+                    ),
+                    title: v2ColumnText(statement, 1) ?? "",
+                    content: v2ColumnText(statement, 2) ?? "",
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
+                    locator: v2ColumnText(statement, 4) ?? "",
+                    contextSummary: "本地文档",
+                    projectID: v2ColumnText(statement, 5).flatMap(UUID.init(uuidString:)),
+                    isPinned: sqlite3_column_int(statement, 6) == 1
+                )
+            }.first
+        case .action:
+            return nil
+        }
+    }
+
+    func loadSearchableRecords(startDate: Date?, limit: Int = 240) -> [SearchableRecord] {
         let timestamp = startDate?.timeIntervalSince1970 ?? 0
         let memoryLimit = max(1, limit * 2 / 5)
         let chunkLimit = max(1, limit * 2 / 5)
@@ -512,22 +608,24 @@ extension SQLiteDatabase {
 
     func upsertEmbedding(reference: RecordReference, model: String, vector: [Float]) {
         let data = vector.withUnsafeBufferPointer { Data(buffer: $0) }
-        var statement: OpaquePointer?
-        let sql = """
-        INSERT OR REPLACE INTO embeddings(record_kind, record_id, model, dimension, vector, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, reference.kind.rawValue, -1, SQLiteDatabase.transient)
-        sqlite3_bind_text(statement, 2, reference.id.uuidString, -1, SQLiteDatabase.transient)
-        sqlite3_bind_text(statement, 3, model, -1, SQLiteDatabase.transient)
-        sqlite3_bind_int(statement, 4, Int32(vector.count))
-        _ = data.withUnsafeBytes { bytes in
-            sqlite3_bind_blob(statement, 5, bytes.baseAddress, Int32(data.count), SQLiteDatabase.transient)
+        perform {
+            var statement: OpaquePointer?
+            let sql = """
+            INSERT OR REPLACE INTO embeddings(record_kind, record_id, model, dimension, vector, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, reference.kind.rawValue, -1, SQLiteDatabase.transient)
+            sqlite3_bind_text(statement, 2, reference.id.uuidString, -1, SQLiteDatabase.transient)
+            sqlite3_bind_text(statement, 3, model, -1, SQLiteDatabase.transient)
+            sqlite3_bind_int(statement, 4, Int32(vector.count))
+            _ = data.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(statement, 5, bytes.baseAddress, Int32(data.count), SQLiteDatabase.transient)
+            }
+            sqlite3_bind_double(statement, 6, Date().timeIntervalSince1970)
+            sqlite3_step(statement)
         }
-        sqlite3_bind_double(statement, 6, Date().timeIntervalSince1970)
-        sqlite3_step(statement)
     }
 
     func loadProjects() -> [MemoryProject] {

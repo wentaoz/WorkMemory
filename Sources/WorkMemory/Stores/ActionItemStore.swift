@@ -3,20 +3,30 @@ import Foundation
 final class ActionItemStore: ObservableObject {
     @Published private(set) var items: [WorkActionItem] = []
 
-    private let database: SQLiteDatabase
+    private var database: SQLiteDatabase
     private let legacyFileURL: URL
 
-    init(fileManager: FileManager = .default) {
-        let supportURL = WorkMemoryDataLocation.supportURL(fileManager: fileManager)
+    init(fileManager: FileManager = .default, supportURL explicitSupportURL: URL? = nil) {
+        let supportURL = explicitSupportURL ?? WorkMemoryDataLocation.supportURL(fileManager: fileManager)
 
         self.legacyFileURL = supportURL.appendingPathComponent("action_items.json")
         do {
-            self.database = try SQLiteDatabase(fileManager: fileManager)
+            self.database = try SQLiteDatabase.openShared(fileManager: fileManager, supportURL: supportURL)
+            migrateLegacyJSONIfNeeded(fileManager: fileManager)
+            items = database.loadActionItems()
+            seedDemoDataIfRequested()
         } catch {
-            fatalError("Unable to open WorkMemory action database: \(error.localizedDescription)")
+            self.database = SQLiteDatabase.makeInMemoryFallback()
+            AppLogStore.shared.error(
+                "行动项数据库打开失败：\(error.localizedDescription)",
+                category: "数据库"
+            )
         }
+    }
 
-        migrateLegacyJSONIfNeeded(fileManager: fileManager)
+    func reload(using database: SQLiteDatabase) {
+        self.database = database
+        migrateLegacyJSONIfNeeded(fileManager: .default)
         items = database.loadActionItems()
         seedDemoDataIfRequested()
     }

@@ -21,8 +21,16 @@ struct HealthCenterView: View {
                 }
             }
 
+            if let failure = store.openFailure {
+                Label(failure.message, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
+
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 9) {
-                healthRow("数据库", value: ByteCountFormatter.string(fromByteCount: store.databaseSize, countStyle: .file), image: "externaldrive")
+                healthRow("数据库", value: store.isDatabaseAvailable
+                    ? ByteCountFormatter.string(fromByteCount: store.databaseSize, countStyle: .file)
+                    : "未打开", image: "externaldrive")
                 healthRow("数据结构", value: "v\(store.databaseSchemaVersion)", image: "cylinder")
                 healthRow("记忆", value: "\(store.totalMemoryCount) 条", image: "brain.head.profile")
                 healthRow("工作会话", value: "\(store.totalActivityCount) 个活跃 · \(store.archivedActivityCount) 个归档", image: "clock")

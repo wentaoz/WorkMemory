@@ -39,8 +39,10 @@ final class AskMemoryService: ObservableObject {
         }
         guard !isAsking, let memoryStore, let settings else { return }
 
+        isAsking = true
+        defer { isAsking = false }
         statusText = "正在本地检索\(scope.label)记忆..."
-        let ranked = memoryStore.rankedResults(
+        let ranked = await memoryStore.rankedResults(
             for: trimmedQuestion,
             scope: scope,
             projectID: selectedProjectID
@@ -70,11 +72,9 @@ final class AskMemoryService: ObservableObject {
             )
         }
 
-        isAsking = true
         answer = ""
         referencedItems = sourceItems
         statusText = "已找到 \(sourceItems.count) 条证据，正在生成回答..."
-        defer { isAsking = false }
 
         do {
             answer = try await client.askMemory(

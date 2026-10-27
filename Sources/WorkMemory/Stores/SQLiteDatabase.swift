@@ -1,33 +1,154 @@
 import Foundation
 import SQLite3
 
-final class SQLiteDatabase {
+final class SQLiteDatabase: @unchecked Sendable {
     let db: OpaquePointer?
     let databaseURL: URL
+    let isInMemory: Bool
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let syncQueue = DispatchQueue(label: "com.playground.WorkMemory.sqlite")
 
-    init(fileManager: FileManager = .default, supportURL explicitSupportURL: URL? = nil) throws {
+    private static let queueKey = DispatchSpecificKey<UInt8>()
+    private static let registryLock = NSLock()
+    private static var registry: [String: SQLiteDatabase] = [:]
+    private static var registryErrors: [String: Error] = [:]
+
+    convenience init(fileManager: FileManager = .default, supportURL explicitSupportURL: URL? = nil) throws {
+        try self.init(fileManager: fileManager, supportURL: explicitSupportURL, target: .file)
+    }
+
+    private enum OpenTarget {
+        case file
+        case memory
+    }
+
+    private init(fileManager: FileManager, supportURL explicitSupportURL: URL?, target: OpenTarget) throws {
         let supportURL = explicitSupportURL ?? WorkMemoryDataLocation.supportURL(fileManager: fileManager)
-
-        try fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
-        let dbURL = supportURL.appendingPathComponent("workmemory.sqlite")
-        databaseURL = dbURL
-
-        var db: OpaquePointer?
-        guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
-            throw SQLiteStoreError.openFailed
-        }
-
-        self.db = db
+        syncQueue.setSpecific(key: Self.queueKey, value: 1)
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
+
+        switch target {
+        case .file:
+            try fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
+            let dbURL = supportURL.appendingPathComponent("workmemory.sqlite")
+            databaseURL = dbURL
+            isInMemory = false
+            db = try Self.openHandle(path: dbURL.path)
+        case .memory:
+            databaseURL = supportURL.appendingPathComponent("workmemory-memory.sqlite")
+            isInMemory = true
+            db = try Self.openHandle(path: ":memory:")
+        }
+
         try createSchema()
         try migrateToCurrentSchema(fileManager: fileManager, supportURL: supportURL)
     }
 
+    private init(unopenedURL: URL) {
+        databaseURL = unopenedURL
+        isInMemory = true
+        db = nil
+        encoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
+        syncQueue.setSpecific(key: Self.queueKey, value: 1)
+    }
+
     deinit {
-        sqlite3_close(db)
+        perform {
+            if let db {
+                sqlite3_close(db)
+            }
+        }
+    }
+
+    static func openShared(
+        fileManager: FileManager = .default,
+        supportURL explicitSupportURL: URL? = nil
+    ) throws -> SQLiteDatabase {
+        let supportURL = explicitSupportURL ?? WorkMemoryDataLocation.supportURL(fileManager: fileManager)
+        let key = cacheKey(for: supportURL)
+        registryLock.lock()
+        defer { registryLock.unlock() }
+
+        if let existing = registry[key] {
+            return existing
+        }
+        if let error = registryErrors[key] {
+            throw error
+        }
+
+        do {
+            let database = try SQLiteDatabase(fileManager: fileManager, supportURL: supportURL)
+            registry[key] = database
+            return database
+        } catch {
+            registryErrors[key] = error
+            throw error
+        }
+    }
+
+    static func evictShared(supportURL: URL) {
+        let key = cacheKey(for: supportURL)
+        registryLock.lock()
+        registry.removeValue(forKey: key)
+        registryErrors.removeValue(forKey: key)
+        registryLock.unlock()
+    }
+
+    static func makeInMemoryFallback() -> SQLiteDatabase {
+        let supportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WorkMemory-InMemory-\(UUID().uuidString)", isDirectory: true)
+        if let database = try? SQLiteDatabase(fileManager: .default, supportURL: supportURL, target: .memory) {
+            return database
+        }
+        return SQLiteDatabase(unopenedURL: supportURL.appendingPathComponent("workmemory.sqlite"))
+    }
+
+    static func backupURLs(in supportURL: URL) -> [URL] {
+        let directory = supportURL.appendingPathComponent("Backups", isDirectory: true)
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return contents
+            .filter { $0.pathExtension == "sqlite" }
+            .sorted { lhs, rhs in
+                let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return left > right
+            }
+    }
+
+    private static func cacheKey(for supportURL: URL) -> String {
+        supportURL.appendingPathComponent("workmemory.sqlite").standardizedFileURL.path
+    }
+
+    private static func openHandle(path: String) throws -> OpaquePointer {
+        var handle: OpaquePointer?
+        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let status = path.withCString { sqlite3_open_v2($0, &handle, flags, nil) }
+        guard status == SQLITE_OK, let opened = handle else {
+            let message = handle.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) }
+                ?? "SQLite open failed (\(status))"
+            if let handle {
+                sqlite3_close(handle)
+            }
+            throw SQLiteStoreError.openFailed(message)
+        }
+        sqlite3_busy_timeout(opened, 5_000)
+        sqlite3_extended_result_codes(opened, 1)
+        return opened
+    }
+
+    @discardableResult
+    func perform<T>(_ body: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+            return try body()
+        }
+        return try syncQueue.sync(execute: body)
     }
 
     func loadMemories(limit: Int = 500, offset: Int = 0) -> [MemoryItem] {
@@ -399,34 +520,38 @@ final class SQLiteDatabase {
     }
 
     func executeThrowing(_ sql: String, _ values: [SQLiteValue] = []) throws {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw SQLiteStoreError.prepareFailed(message)
-        }
-        defer { sqlite3_finalize(statement) }
+        try perform {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw SQLiteStoreError.prepareFailed(message)
+            }
+            defer { sqlite3_finalize(statement) }
 
-        bind(values, to: statement)
+            bind(values, to: statement)
 
-        let result = sqlite3_step(statement)
-        guard result == SQLITE_DONE || result == SQLITE_ROW else {
-            throw SQLiteStoreError.stepFailed(message)
+            let result = sqlite3_step(statement)
+            guard result == SQLITE_DONE || result == SQLITE_ROW else {
+                throw SQLiteStoreError.stepFailed(message)
+            }
         }
     }
 
     func query<T>(_ sql: String, _ values: [SQLiteValue] = [], map: (OpaquePointer?) -> T) -> [T] {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            return []
-        }
-        defer { sqlite3_finalize(statement) }
+        perform {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                return []
+            }
+            defer { sqlite3_finalize(statement) }
 
-        bind(values, to: statement)
+            bind(values, to: statement)
 
-        var result: [T] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            result.append(map(statement))
+            var result: [T] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(map(statement))
+            }
+            return result
         }
-        return result
     }
 
     private func bind(_ values: [SQLiteValue], to statement: OpaquePointer?) {
@@ -469,19 +594,35 @@ enum SQLiteValue {
 }
 
 enum SQLiteStoreError: LocalizedError {
-    case openFailed
+    case openFailed(String)
     case prepareFailed(String)
     case stepFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .openFailed:
-            return "无法打开 SQLite 数据库"
+        case .openFailed(let message):
+            return "无法打开 SQLite 数据库：\(message)"
         case .prepareFailed(let message):
             return "SQLite prepare failed: \(message)"
         case .stepFailed(let message):
             return "SQLite step failed: \(message)"
         }
+    }
+}
+
+struct DatabaseOpenFailure {
+    var message: String
+    var databaseURL: URL
+    var supportURL: URL
+    var backups: [URL]
+
+    static func make(error: Error, supportURL: URL) -> DatabaseOpenFailure {
+        DatabaseOpenFailure(
+            message: error.localizedDescription,
+            databaseURL: supportURL.appendingPathComponent("workmemory.sqlite"),
+            supportURL: supportURL,
+            backups: SQLiteDatabase.backupURLs(in: supportURL)
+        )
     }
 }
 

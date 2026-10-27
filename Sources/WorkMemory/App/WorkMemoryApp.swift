@@ -45,6 +45,15 @@ struct WorkMemoryApp: App {
                         .environmentObject(passiveCaptureMonitor)
                         .environmentObject(deepSeekSettings)
                 }
+                .overlay {
+                    if let failure = store.openFailure {
+                        DatabaseErrorView(
+                            failure: failure,
+                            onRetry: recoverDatabase,
+                            onRestore: recoverDatabase(from:)
+                        )
+                    }
+                }
                 .onAppear {
                     if store.hasExistingData {
                         onboardingCompleted = true
@@ -248,5 +257,21 @@ struct WorkMemoryApp: App {
     private func openMainWindow() {
         openWindow(id: "main")
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func recoverDatabase() {
+        store.retryOpen()
+        reloadDependentStores()
+    }
+
+    private func recoverDatabase(from backupURL: URL) {
+        store.restoreFromBackup(backupURL)
+        reloadDependentStores()
+    }
+
+    private func reloadDependentStores() {
+        guard store.isDatabaseAvailable else { return }
+        actionStore.reload(using: store.database)
+        documentIndexStore.reload(using: store.database)
     }
 }
