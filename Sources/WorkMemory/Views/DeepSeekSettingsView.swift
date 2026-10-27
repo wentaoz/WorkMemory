@@ -48,8 +48,13 @@ struct DeepSeekSettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 88, alignment: .trailing)
 
-                    SecureField(settings.providerPreset.apiKeyPlaceholder, text: $settings.apiKey)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        SecureField(settings.providerPreset.apiKeyPlaceholder, text: $settings.apiKey)
+                            .textFieldStyle(.roundedBorder)
+                        Text("保存在系统钥匙串，不再写入明文偏好设置")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 GridRow {
