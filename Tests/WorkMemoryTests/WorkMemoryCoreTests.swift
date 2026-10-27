@@ -278,6 +278,34 @@ final class WorkMemoryCoreTests: XCTestCase {
         XCTAssertEqual(results.first?.record.reference, RecordReference(kind: .memory, id: target.id))
     }
 
+    func testKeychainStoreRoundTrip() {
+        let account = "wm.test.keychain.\(UUID().uuidString)"
+        addTeardownBlock { KeychainStore.deletePassword(account: account) }
+
+        KeychainStore.setPassword("secret-token", account: account)
+        XCTAssertEqual(KeychainStore.password(account: account), "secret-token")
+        KeychainStore.setPassword("", account: account)
+        XCTAssertNil(KeychainStore.password(account: account))
+    }
+
+    @MainActor
+    func testAPIKeyMigratesFromUserDefaultsToKeychain() {
+        let suiteName = "wm.settings.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let account = "wm.test.apiKey.\(UUID().uuidString)"
+        defaults.set("legacy-secret", forKey: DeepSeekSettings.apiKeyKey)
+        addTeardownBlock {
+            KeychainStore.deletePassword(account: account)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let settings = DeepSeekSettings(userDefaults: defaults, keychainAccount: account)
+
+        XCTAssertEqual(settings.apiKey, "legacy-secret")
+        XCTAssertNil(defaults.string(forKey: DeepSeekSettings.apiKeyKey))
+        XCTAssertEqual(KeychainStore.password(account: account), "legacy-secret")
+    }
+
     func testLargeWorkspaceStartupFixtureWhenProvided() throws {
         guard let path = ProcessInfo.processInfo.environment["WORKMEMORY_LARGE_FIXTURE_DIR"] else {
             throw XCTSkip("Set WORKMEMORY_LARGE_FIXTURE_DIR to run the large-workspace startup check")
