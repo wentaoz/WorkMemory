@@ -240,6 +240,55 @@ final class WorkMemoryCoreTests: XCTestCase {
         XCTAssertNil(database.loadEmbedding(reference: .init(kind: .chunk, id: chunk.id), model: "test"))
     }
 
+    func testPrivacyFilterUsesWordBoundariesAndExactURLSegments() {
+        let filter = PrivacyFilter(rules: PrivacyRules(
+            extraBundleIdentifiers: ["com.example.wallet"],
+            extraKeywords: ["工资单"],
+            extraDomains: ["secret.example.test"],
+            extraPathSegments: ["billing"]
+        ))
+
+        XCTAssertTrue(filter.allows(page: BrowserPageContext(
+            title: "Author notes",
+            url: "https://github.com/wentaoz/author-guide"
+        )))
+        XCTAssertTrue(filter.allows(page: BrowserPageContext(
+            title: "Privacy policy",
+            url: "https://example.test/privacy"
+        )))
+        XCTAssertFalse(filter.allows(page: BrowserPageContext(
+            title: "Checkout",
+            url: "https://shop.example.test/checkout"
+        )))
+        XCTAssertFalse(filter.allows(page: BrowserPageContext(
+            title: "Account",
+            url: "https://app.example.test/auth/login"
+        )))
+        XCTAssertFalse(filter.allows(page: BrowserPageContext(
+            title: "Home",
+            url: "https://secret.example.test/home"
+        )))
+        XCTAssertFalse(filter.allows(page: BrowserPageContext(
+            title: "Invoice",
+            url: "https://app.example.test/billing"
+        )))
+        XCTAssertFalse(filter.allows(text: "请输入密码"))
+        XCTAssertFalse(filter.allows(text: "本月工资单已发送"))
+        XCTAssertTrue(filter.allows(text: "Authoring the launch checklist"))
+        XCTAssertFalse(filter.allows(context: ActiveAppContext(
+            appName: "Wallet",
+            bundleIdentifier: "com.example.wallet",
+            processIdentifier: 1,
+            windowTitle: "Home"
+        )))
+        XCTAssertFalse(filter.allows(context: ActiveAppContext(
+            appName: "1Password",
+            bundleIdentifier: "com.1password.1password",
+            processIdentifier: 1,
+            windowTitle: "Vault"
+        )))
+    }
+
     func testLargeWorkspaceStartupFixtureWhenProvided() throws {
         guard let path = ProcessInfo.processInfo.environment["WORKMEMORY_LARGE_FIXTURE_DIR"] else {
             throw XCTSkip("Set WORKMEMORY_LARGE_FIXTURE_DIR to run the large-workspace startup check")
