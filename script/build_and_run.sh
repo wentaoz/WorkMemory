@@ -27,10 +27,12 @@ INTEL_TRIPLE="x86_64-apple-macosx$MIN_SYSTEM_VERSION"
 cd "$ROOT_DIR"
 
 "$ROOT_DIR/script/generate_app_icon.sh" >/dev/null
-swift build --configuration "$CONFIGURATION" --triple "$ARM_TRIPLE"
-swift build --configuration "$CONFIGURATION" --triple "$INTEL_TRIPLE"
-ARM_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$ARM_TRIPLE")/$APP_NAME"
-INTEL_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$INTEL_TRIPLE")/$APP_NAME"
+ARM_BUILD_DIR="$ROOT_DIR/.build/universal/arm64"
+INTEL_BUILD_DIR="$ROOT_DIR/.build/universal/x86_64"
+swift build --configuration "$CONFIGURATION" --triple "$ARM_TRIPLE" --build-path "$ARM_BUILD_DIR"
+swift build --configuration "$CONFIGURATION" --triple "$INTEL_TRIPLE" --build-path "$INTEL_BUILD_DIR"
+ARM_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$ARM_TRIPLE" --build-path "$ARM_BUILD_DIR")/$APP_NAME"
+INTEL_BINARY="$(swift build --configuration "$CONFIGURATION" --show-bin-path --triple "$INTEL_TRIPLE" --build-path "$INTEL_BUILD_DIR")/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
