@@ -11,6 +11,8 @@ struct PassiveCaptureControlView: View {
                 sourceToggles
             }
 
+            pauseRow
+
             permissionRows
 
             statusRows
@@ -57,6 +59,28 @@ struct PassiveCaptureControlView: View {
             .toggleStyle(.switch)
             .disabled(!monitor.isEnabled)
         }
+    }
+
+    private var pauseRow: some View {
+        HStack(spacing: 8) {
+            if monitor.isPrivacyPaused {
+                Button("恢复采集") {
+                    monitor.resumeCapture()
+                }
+                Text(monitor.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else {
+                Button("暂停 15 分钟") {
+                    monitor.pauseCapture(forMinutes: 15)
+                }
+                Button("暂停 1 小时") {
+                    monitor.pauseCapture(forMinutes: 60)
+                }
+            }
+        }
+        .font(.caption)
     }
 
     private var ocrButtons: some View {

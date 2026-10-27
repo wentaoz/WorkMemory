@@ -9,6 +9,8 @@ struct SettingsView: View {
 
             PassiveCaptureControlView()
 
+            PrivacySettingsView()
+
             GlobalDictationControlView()
 
             DocumentImportView()

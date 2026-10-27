@@ -42,12 +42,22 @@ final class PassiveCaptureMonitor: NSObject, ObservableObject {
     @Published private(set) var currentContextText = "尚未读取当前上下文"
     @Published private(set) var lastCaptureText = "尚未自动保存"
     @Published private(set) var lastCapturedAt: Date?
+    @Published var pausedUntil: Date? {
+        didSet {
+            if let pausedUntil {
+                UserDefaults.standard.set(pausedUntil.timeIntervalSince1970, forKey: Self.pausedUntilKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.pausedUntilKey)
+            }
+        }
+    }
 
     private static let enabledDefaultsKey = "passiveCapture.isEnabled"
     private static let ocrEnabledDefaultsKey = "passiveCapture.ocrEnabled"
     private static let windowsDefaultsKey = "passiveCapture.windowsEnabled"
     private static let browserDefaultsKey = "passiveCapture.browserEnabled"
     private static let typingDefaultsKey = "passiveCapture.typingEnabled"
+    private static let pausedUntilKey = "passiveCapture.pausedUntil"
     private static let screenCapturePendingText = "等待屏幕录制授权；授权后请重启或刷新"
     private let activeContextReader = ActiveContextReader()
     private let textReader = AccessibilityTextReader()
@@ -86,7 +96,26 @@ final class PassiveCaptureMonitor: NSObject, ObservableObject {
         capturesWindows = UserDefaults.standard.object(forKey: Self.windowsDefaultsKey) as? Bool ?? true
         capturesBrowser = UserDefaults.standard.object(forKey: Self.browserDefaultsKey) as? Bool ?? true
         capturesTyping = UserDefaults.standard.object(forKey: Self.typingDefaultsKey) as? Bool ?? true
+        if let timestamp = UserDefaults.standard.object(forKey: Self.pausedUntilKey) as? TimeInterval {
+            let until = Date(timeIntervalSince1970: timestamp)
+            pausedUntil = until > Date() ? until : nil
+        }
         super.init()
+    }
+
+    var isPrivacyPaused: Bool {
+        guard let pausedUntil else { return false }
+        return pausedUntil > Date()
+    }
+
+    func pauseCapture(forMinutes minutes: Int) {
+        pausedUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        statusText = "隐私暂停至 \(DateFormatting.time.string(from: pausedUntil ?? Date()))"
+    }
+
+    func resumeCapture() {
+        pausedUntil = nil
+        statusText = isEnabled ? "无感记录运行中" : "无感记录未开启"
     }
 
     func configure(store: MemoryStore) {
@@ -153,6 +182,10 @@ final class PassiveCaptureMonitor: NSObject, ObservableObject {
     }
 
     func captureCurrentWindowOCRNow() {
+        if isPrivacyPaused {
+            statusText = pauseStatusText
+            return
+        }
         refreshPermissionStatus()
         guard screenCaptureTrusted else {
             statusText = Self.screenCapturePendingText
@@ -210,6 +243,10 @@ final class PassiveCaptureMonitor: NSObject, ObservableObject {
 
     private func poll() {
         guard isEnabled else { return }
+        if isPrivacyPaused {
+            statusText = pauseStatusText
+            return
+        }
 
         refreshPermissionStatus()
         guard accessibilityTrusted else {
@@ -505,5 +542,10 @@ final class PassiveCaptureMonitor: NSObject, ObservableObject {
     private func makeContextText(_ context: ActiveAppContext) -> String {
         let title = context.windowTitle?.nilIfBlank ?? "无窗口标题"
         return "\(context.appName) · \(title)"
+    }
+
+    private var pauseStatusText: String {
+        guard let pausedUntil else { return "隐私暂停中" }
+        return "隐私暂停至 \(DateFormatting.time.string(from: pausedUntil))"
     }
 }
